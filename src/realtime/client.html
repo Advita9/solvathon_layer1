@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<body>
+<button onclick="start()">Start Mic</button>
+
+<script>
+async function start() {
+    console.log("Requesting microphone…");
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    console.log("Mic stream:", stream);
+    console.log("Audio tracks:", stream.getAudioTracks());
+
+    if (stream.getAudioTracks().length === 0) {
+        console.error("❌ No audio tracks found!");
+        return;
+    }
+
+    const pc = new RTCPeerConnection();
+
+    stream.getTracks().forEach(track => {
+        console.log("Adding track:", track.kind);
+        pc.addTrack(track, stream);
+    });
+
+    pc.oniceconnectionstatechange = () => {
+        console.log("ICE state:", pc.iceConnectionState);
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    console.log("Sending offer to server…");
+
+    const response = await fetch("http://localhost:8080/offer", {
+        method: "POST",
+        body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+        headers: { "Content-Type": "application/json" }
+    });
+
+    const answer = await response.json();
+    await pc.setRemoteDescription(answer);
+
+    console.log("✅ WebRTC connection established");
+}
+</script>
+</body>
+</html>
