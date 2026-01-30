@@ -1,3 +1,6 @@
 data/
 Audio_Speech_Actors_01-24.zip/
 common-voice.zip
+*.wav
+__pycache__/
+*.pyc
