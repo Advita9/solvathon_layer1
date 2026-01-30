@@ -11,7 +11,14 @@ import torch
 
 from transformers import MimiModel, AutoFeatureExtractor
 from src.models.emergency_classifier import MimiEmergencyClassifier
+from collections import deque
+import time
 
+DISTRESS_WINDOW = 5        # seconds to track
+MIN_HITS = 3               # how many positives required
+THRESHOLD = 0.7
+
+distress_events = deque()
 # -----------------------
 # Setup Async Loop in Background
 # -----------------------
@@ -69,8 +76,9 @@ async def process_audio_track(track):
 
 
 async def run_emergency_detection(audio_chunk):
-    audio_16k = librosa.resample(audio_chunk, orig_sr=48000, target_sr=TARGET_SR)
+    global distress_events
 
+    audio_16k = librosa.resample(audio_chunk, orig_sr=48000, target_sr=TARGET_SR)
     inputs = fe(raw_audio=audio_16k, sampling_rate=TARGET_SR, return_tensors="pt").to(device)
 
     with torch.no_grad():
@@ -79,8 +87,21 @@ async def run_emergency_detection(audio_chunk):
 
     print(f"🚑 Emergency probability: {prob:.3f}")
 
-    if prob > 0.7:
-        print("🚨 DISTRESS DETECTED 🚨")
+    now = time.time()
+
+    # Remove old events outside window
+    while distress_events and now - distress_events[0] > DISTRESS_WINDOW:
+        distress_events.popleft()
+
+    # Add new event if above threshold
+    if prob > THRESHOLD:
+        distress_events.append(now)
+
+    # Check sustained distress
+    if len(distress_events) >= MIN_HITS:
+        print("🚨 SUSTAINED DISTRESS DETECTED 🚨")
+        distress_events.clear()  # prevent repeat spam
+
 
 
 # -----------------------
