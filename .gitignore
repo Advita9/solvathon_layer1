@@ -1,6 +1,25 @@
+# Datasets
 data/
-Audio_Speech_Actors_01-24.zip/
-common-voice.zip
+*.zip
+
+# Audio files
 *.wav
+*.mp3
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Virtual environment
+venv/
+.venv/
+
+# Model weights
+models/
+*.pt
+*.pth
+*.h5
+
+# macOS junk
+.DS_Store
+
