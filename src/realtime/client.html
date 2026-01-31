@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+
+<body>
+    <button onclick="start()">Start Mic</button>
+    <div id="status">Ready</div>
+    <div id="result"></div>
+
+    <script>
+        async function start() {
+            console.log("Requesting microphone…");
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            console.log("Mic stream:", stream);
+            console.log("Audio tracks:", stream.getAudioTracks());
+
+            if (stream.getAudioTracks().length === 0) {
+                console.error("❌ No audio tracks found!");
+                return;
+            }
+
+            // Start recording
+            const mediaRecorder = new MediaRecorder(stream);
+            const audioChunks = [];
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            let detectedLanguage = "eng";
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                console.log("Recording stopped, uploading for language detection...");
+
+                const formData = new FormData();
+                formData.append("audio", audioBlob, "test_audio.wav");
+
+                try {
+                    const response = await fetch("http://localhost:8080/detect-lang", {
+                        method: "POST",
+                        body: formData
+                    });
+
+                    const data = await response.json();
+                    console.log("Language detection result:", data);
+                    if (data.status === "success") {
+                        // Prefer the highest-confidence overall language (top_global[0])
+                        if (data.top_global && data.top_global.length > 0) {
+                            language = data.top_global[0].code;
+                            detectedLanguage = language;
+                            lang_detection_found = true;
+                            console.log("Done!", data);
+                            console.log("Language detected (highest global confidence):", language, "prob=", data.top_global[0].prob);
+                        } else if (data.top_indian && data.top_indian.length > 0) {
+                            // Fallback to top_indian if top_global missing
+                            language = data.top_indian[0].code;
+                            detectedLanguage = language;
+                            lang_detection_found = true;
+                            console.log("Done! (fallback to top_indian)", data);
+                            console.log("Language detected (top_indian):", language, "prob=", data.top_indian[0].prob);
+                        } else {
+                            console.log("Done! but no language candidates returned", data);
+                        }
+                    } else {
+                        console.log("No language detected, server returned:", data);
+                    }
+
+                    // WebRTC setup
+                    console.log("Starting WebRTC with detected language:", detectedLanguage);
+                    const pc = new RTCPeerConnection();
+
+                    stream.getTracks().forEach(track => {
+                        console.log("Adding track:", track.kind);
+                        pc.addTrack(track, stream);
+                    });
+
+                    pc.oniceconnectionstatechange = () => {
+                        console.log("ICE state:", pc.iceConnectionState);
+                    };
+
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+
+                    console.log("Sending offer to server…");
+
+                    const rtcResponse = await fetch("http://localhost:8080/offer", {
+                        method: "POST",
+                        body: JSON.stringify({ sdp: offer.sdp, type: offer.type, language: detectedLanguage }),
+                        headers: { "Content-Type": "application/json" }
+                    });
+
+                    const answer = await rtcResponse.json();
+                    await pc.setRemoteDescription(answer);
+
+                    console.log("✅ WebRTC connection established");
+                } catch (err) {
+                    console.error("Upload failed:", err);
+                    document.getElementById('status').innerText = "Error!";
+                    document.getElementById('result').innerText = "Upload Failed: " + err;
+                }
+            };
+
+            mediaRecorder.start();
+            document.getElementById('status').innerText = "Recording for 5 seconds...";
+
+            // Stop after 5 seconds
+            setTimeout(() => {
+                mediaRecorder.stop();
+            }, 5000);
+
+
+        }
+    </script>
+</body>
+
+</html>
