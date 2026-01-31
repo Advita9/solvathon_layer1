@@ -182,6 +182,11 @@ from src.llm.embedding_agent import process_with_context, context_manager as llm
 from src.llm.stream_chunker import StreamChunker
 from src.tts.tts_manager import TTSManager
 from src.realtime.audio_track import TTSAudioTrack
+from src.realtime.twilio_track import TwilioInputTrack
+from flask_sock import Sock
+import audioop
+import base64
+import json
 
 tts_manager = TTSManager()
 
@@ -223,6 +228,7 @@ threading.Thread(target=run_loop, daemon=True).start()
 # Flask App
 # -----------------------
 app = Flask(__name__)
+sock = Sock(app)
 
 CORS(app) 
 pcs = set()
@@ -309,7 +315,9 @@ threading.Thread(target=load_lid_model, daemon=True).start()
 # -----------------------
 # Audio Processing
 # -----------------------
-async def process_audio_track(track, target_language="eng", output_track=None):
+import io # Ensure io is imported
+
+async def process_audio_track(track, target_language="eng", output_track=None, twilio_output_sender=None):
     print(f"🎙 Audio track started (Language: {target_language})")
 
     # Create LLM Session for this track
@@ -321,7 +329,11 @@ async def process_audio_track(track, target_language="eng", output_track=None):
         session_id = "temp_session"
 
 
-    global asr_buffer, last_voice_time, speech_start_time
+    # Create local buffer for this track session (don't use global asr_buffer safely multiple calls)
+    # Actually, using global is bad for multiple calls. Let's make it local.
+    local_asr_buffer = np.array([], dtype=np.float32)
+    local_speech_start = None
+    local_last_voice = None
 
     buffer = np.array([], dtype=np.float32)
 
@@ -353,35 +365,36 @@ async def process_audio_track(track, target_language="eng", output_track=None):
 
         if energy > SILENCE_THRESHOLD:
             # Speech detected
-            if speech_start_time is None:
-                speech_start_time = now
+            if local_speech_start is None:
+                local_speech_start = now
                 print("🗣 Speech started")
 
-            last_voice_time = now
-            asr_buffer = np.concatenate([asr_buffer, pcm])
+            local_last_voice = now
+            local_asr_buffer = np.concatenate([local_asr_buffer, pcm])
 
         else:
             # Silence frame
-            if speech_start_time is not None and last_voice_time is not None:
-                silence_time = now - last_voice_time
+            if local_speech_start is not None and local_last_voice is not None:
+                silence_time = now - local_last_voice
 
                 if silence_time > SILENCE_DURATION:
-                    speech_length = last_voice_time - speech_start_time
+                    speech_length = local_last_voice - local_speech_start
 
-                    if speech_length > MIN_SPEECH_DURATION and len(asr_buffer) > 0:
+                    if speech_length > MIN_SPEECH_DURATION and len(local_asr_buffer) > 0:
                         print(f"🛑 Speech ended → Sending to Whisper ({target_language})")
-                        chunk = asr_buffer.copy()
+                        chunk = local_asr_buffer.copy()
                         asyncio.create_task(run_whisper_asr(
                             chunk, 
                             language_code=target_language, 
                             session_id=session_id,
-                            output_track=output_track
+                            output_track=output_track,
+                            twilio_output_sender=twilio_output_sender
                         ))
 
                     # Reset state
-                    asr_buffer = np.array([], dtype=np.float32)
-                    speech_start_time = None
-                    last_voice_time = None
+                    local_asr_buffer = np.array([], dtype=np.float32)
+                    local_speech_start = None
+                    local_last_voice = None
 
 
 # async def run_whisper_asr(audio_chunk_48k):
@@ -413,7 +426,7 @@ async def process_audio_track(track, target_language="eng", output_track=None):
 #     else:
 #         print("🤐 (No speech detected)")
 
-async def run_whisper_asr(audio_chunk_48k, language_code="eng", session_id="temp_session", output_track=None):
+async def run_whisper_asr(audio_chunk_48k, language_code="eng", session_id="temp_session", output_track=None, twilio_output_sender=None):
     global whisper_model
 
     if whisper_model is None:
@@ -505,6 +518,10 @@ async def run_whisper_asr(audio_chunk_48k, language_code="eng", session_id="temp
                              except Exception as e:
                                  print(f"❌ Failed to add audio to track: {e}")
                                  
+                         if twilio_output_sender:
+                             # Send to Phone
+                             await twilio_output_sender(audio_bytes)
+                                  
                          # Save to debug (optional)
                          # with open(f"debug_tts_{int(time.time())}.wav", "wb") as f:
                          #    f.write(audio_bytes)
